@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: Serverless Query Athena
+
+Parameters:
+
+  RawDataBaseName:
+    Type: String
+    Default: "raw_data_covid_19"
+    Description: "Name of the AWS Glue database to contain raw data tables."
+  
+  S3RawDataLocationURI:
+    Type: String
+    Default: "s3://covid19-lake/rearc-covid-19-nyt-data-in-usa/json/us-states"
+    Description: "S3 location for raw sample data."
+
+  S3RawDataARN:
+    Type: String
+    Default: "arn:aws:s3:::covid19-lake"
+    Description: "Amazon Resource Name (ARN) Data Lake for raw sample data."    
+
+Resources:
+  # RawDataS3Bucket:
+  #   Type: 'AWS::S3::Bucket'
+  #   Properties:
+  #     BucketName: "janus-queries-raw-data"
+      
+  QueryResultsS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - "janus-queries-results"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+  
+  GlueRawDataBase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref RawDataBaseName
+        Description: Database Raw Data
+
+  GlueRawDataNYTimesCovidTable:
+    Type: 'AWS::Glue::Table'
+    Properties: 
+      CatalogId: !Ref AWS::AccountId     
+      DatabaseName: !Ref GlueRawDataBase
+      TableInput: 
+        Description: "Raw Data on COVID-19 cases from NY Times at US state level."
+        TableType: "EXTERNAL_TABLE"
+        Retention: 0
+        Name: covid_nytimes_states
+        Parameters:
+          has_encrypted_data: False
+          classification: json
+          typeOfData: file
+        StorageDescriptor:
+          Compressed: False
+          InputFormat: "org.apache.hadoop.mapred.TextInputFormat"
+          Location: !Ref S3RawDataLocationURI
+          OutputFormat: "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+          StoredAsSubDirectories: false
+          SerdeInfo:
+            Parameters: {
+              "paths": "date,state,fips,cases,deaths"
+            }
+            SerializationLibrary: "org.openx.data.jsonserde.JsonSerDe"
+          Columns:
+            - Type: string
+              Name: date
+              Comment: "reporting date"
+            - Type: string
+              Name: state
+              Comment: ""
+            - Type: string
+              Name: fips
+              Comment: "FIPS code"
+            - Type: bigint
+              Name: cases
+              Comment: "# confirmed cases"
+            - Type: bigint
+              Name: deaths
+              Comment: "# deaths"
+
+  LambdaAthenaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: JanusLambdaAthenaQuery
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "athena:StartQueryExecution"
+                  - "athena:GetQueryExecution"
+                Resource:
+                  - !Sub "arn:aws:athena:eu-west-1:${AWS::AccountId}:workgroup/primary"
+        - PolicyName: JanusLambdaGlue
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "glue:GetTable"
+                Resource:
+                  - "*"
+        - PolicyName: JanusLambdaS3Access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                  - "s3-object-lambda:*"
+                Resource:
+                  - !GetAtt QueryResultsS3Bucket.Arn
+                  - !Ref S3RawDataARN
+
+  QuerySendReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: query_send_report/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 180
+      Role: !GetAtt LambdaAthenaRole.Arn
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          ATHENA_DATABASE: !Ref GlueRawDataBase
+          SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/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"
+          BUCKET_NAME: !Ref QueryResultsS3Bucket
