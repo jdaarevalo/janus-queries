@@ -149,5 +149,5 @@ Resources:
       Environment:
         Variables:
           ATHENA_DATABASE: !Ref GlueRawDataBase
-          SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/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"
+          SLACK_WEBHOOK_URL: ""
           BUCKET_NAME: !Ref QueryResultsS3Bucket
