@@ -95,6 +95,8 @@ Resources:
   LambdaAthenaRole:
     Type: "AWS::IAM::Role"
     Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSQSFullAccess"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -114,7 +116,7 @@ Resources:
                   - "athena:StartQueryExecution"
                   - "athena:GetQueryExecution"
                 Resource:
-                  - !Sub "arn:aws:athena:eu-west-1:${AWS::AccountId}:workgroup/primary"
+                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
         - PolicyName: JanusLambdaGlue
           PolicyDocument:
             Version: 2012-10-17
@@ -151,3 +153,51 @@ Resources:
           ATHENA_DATABASE: !Ref GlueRawDataBase
           SLACK_WEBHOOK_URL: ""
           BUCKET_NAME: !Ref QueryResultsS3Bucket
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SqsLambda.Arn
+            BatchSize: 10
+
+  SqsLambda:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 1080
+
+  LambdaSlackResponseRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSQSFullAccess"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  SlackResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: slack_response/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      Role: !GetAtt LambdaSlackResponseRole.Arn
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          SQS_URL: !GetAtt SqsLambda.QueueUrl
+      Events:
+        ApiEvent:
+          Type: HttpApi
+
+Outputs:
+  SlackResponseApi:
+    Description: "API Gateway endpoint URL for Slack Response function"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
